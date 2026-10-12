@@ -92,3 +92,51 @@ def test_verify_detects_corruption(tmp_path):
     from repeatzip.cross.verify import verify_bundle
     result = verify_bundle(str(bad))
     assert not result["ok"], f"expected verify to fail, got {result}"
+
+
+def test_read_bundle_rejects_trailing_data(tmp_path):
+    src = tmp_path / "in"; src.mkdir()
+    _write_silent_wav(src / "a.wav")
+    bundle = tmp_path / "p.rpzarc"
+    archive(str(src), str(bundle), verbose=False)
+
+    raw = bundle.read_bytes()
+    bad = tmp_path / "bad.rpzarc"
+    bad.write_bytes(raw + b"\x00" * 16)
+
+    with pytest.raises(RepeatzipError, match="trailing"):
+        _read_bundle(str(bad))
+
+
+def test_read_bundle_rejects_count_mismatch(tmp_path):
+    src = tmp_path / "in"; src.mkdir()
+    _write_silent_wav(src / "a.wav")
+    bundle = tmp_path / "p.rpzarc"
+    archive(str(src), str(bundle), verbose=False)
+
+    raw = bytearray(bundle.read_bytes())
+    magic, version, _, count, meta_len, payload_len = HDR.unpack_from(raw, 0)
+    HDR.pack_into(raw, 0, magic, version, 0, count + 5, meta_len, payload_len)
+    bad = tmp_path / "bad.rpzarc"
+    bad.write_bytes(bytes(raw))
+
+    with pytest.raises(RepeatzipError, match="entry count"):
+        _read_bundle(str(bad))
+
+
+def test_extract_detects_tampered_payload(tmp_path):
+    src = tmp_path / "in"; src.mkdir()
+    _write_silent_wav(src / "a.wav")
+    bundle = tmp_path / "p.rpzarc"
+    archive(str(src), str(bundle), verbose=False)
+
+    raw = bytearray(bundle.read_bytes())
+    magic, version, _, count, meta_len, payload_len = HDR.unpack_from(raw, 0)
+    flip_at = HDR.size + meta_len + payload_len // 2
+    raw[flip_at] ^= 0xFF
+    bad = tmp_path / "bad.rpzarc"
+    bad.write_bytes(bytes(raw))
+
+    out = tmp_path / "out"
+    with pytest.raises(Exception):
+        extract(str(bad), str(out), verbose=False)

@@ -219,33 +219,65 @@ def archive(input_dir: str, output_path: str, *, ref_ncc=0.5,
         print(f"[archive] ratio          : {total_orig/total_out:.3f}x")
 
 
+MAX_META_LEN = 1 << 30        # 1 GiB
+MAX_PAYLOAD_LEN = 1 << 40     # 1 TiB
+MAX_FILE_BYTES = 1 << 41      # 2 TiB hard ceiling
+
+
 def _read_bundle(path):
-    with open(path, "rb") as f:
-        raw = f.read()
-    if len(raw) < HDR.size:
+    file_size = os.path.getsize(path)
+    if file_size < HDR.size:
         raise RepeatzipError("bundle too small")
-    magic, version, _, count, meta_len, payload_len = HDR.unpack_from(raw, 0)
-    if magic != MAGIC:
-        raise RepeatzipError(f"bad archive magic: {magic!r}")
-    if version not in (1, 2):
-        raise RepeatzipError(f"unsupported archive version {version}")
-    if count > 65535:
-        raise RepeatzipError(f"entry count {count} exceeds limit")
-    if meta_len > (1 << 30):
-        raise RepeatzipError(f"metadata length {meta_len} exceeds limit")
-    if payload_len > (1 << 40):
-        raise RepeatzipError(f"payload length {payload_len} exceeds limit")
-    total = HDR.size + meta_len + payload_len
-    if total > len(raw):
+    if file_size > MAX_FILE_BYTES:
         raise RepeatzipError(
-            f"declared size {total} exceeds file size {len(raw)}")
-    off = HDR.size
+            f"bundle size {file_size} exceeds limit {MAX_FILE_BYTES}")
+
+    with open(path, "rb") as f:
+        hdr_bytes = f.read(HDR.size)
+        magic, version, _, count, meta_len, payload_len = HDR.unpack_from(
+            hdr_bytes, 0)
+        if magic != MAGIC:
+            raise RepeatzipError(f"bad archive magic: {magic!r}")
+        if version not in (1, 2):
+            raise RepeatzipError(f"unsupported archive version {version}")
+        if meta_len > MAX_META_LEN:
+            raise RepeatzipError(
+                f"metadata length {meta_len} exceeds limit")
+        if payload_len > MAX_PAYLOAD_LEN:
+            raise RepeatzipError(
+                f"payload length {payload_len} exceeds limit")
+
+        declared_total = HDR.size + meta_len + payload_len
+        if declared_total != file_size:
+            if declared_total > file_size:
+                raise RepeatzipError(
+                    f"declared size {declared_total} exceeds file "
+                    f"size {file_size}")
+            raise RepeatzipError(
+                f"trailing data: declared size {declared_total}, "
+                f"file size {file_size}")
+
+        meta_bytes = f.read(meta_len)
+        if len(meta_bytes) != meta_len:
+            raise RepeatzipError("metadata truncated")
+        pay = f.read(payload_len)
+        if len(pay) != payload_len:
+            raise RepeatzipError("payload truncated")
+
     try:
-        meta = json.loads(raw[off:off + meta_len].decode("utf-8"))
+        meta = json.loads(meta_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RepeatzipError(f"bad archive metadata: {exc}") from exc
-    pay = raw[off + meta_len:off + meta_len + payload_len]
-    for e in meta.get("entries", []):
+
+    entries = meta.get("entries", [])
+    if not isinstance(entries, list):
+        raise RepeatzipError("metadata entries must be a list")
+    if len(entries) != count:
+        raise RepeatzipError(
+            f"header entry count {count} does not match metadata "
+            f"entries {len(entries)}")
+
+    for e in entries:
         try:
             po = int(e["payload_offset"])
             pl = int(e["payload_len"])
@@ -254,7 +286,6 @@ def _read_bundle(path):
         if po < 0 or pl < 0 or po + pl > payload_len:
             raise RepeatzipError(
                 f"entry {e.get('name', '?')!r} payload out of range")
-    for e in meta.get("entries", []):
         e.setdefault("delta_mode",
                      "delta" if e.get("reference") else "raw")
         e.setdefault("lag", 0)
@@ -332,6 +363,16 @@ def extract(bundle_path: str, output_dir: str, *, verbose=False) -> None:
             tb64 = e.get("wav_trailer_b64", "")
             trailer = base64.b64decode(tb64) if tb64 else b""
             pcm = samples_to_pcm_bytes(decoded[e["name"]], e["sampwidth"])
+
+            stored = e.get("original_sha256", "")
+            if stored:
+                full_bytes = prefix + pcm + trailer
+                got = hashlib.sha256(full_bytes).hexdigest()
+                if got != stored:
+                    raise RepeatzipError(
+                        f"integrity check failed for {e['name']!r}: "
+                        f"expected {stored[:12]}, got {got[:12]}")
+
             out_path = _safe_output_path(output_dir, e["name"])
             write_wav_parts(out_path, pcm, prefix, trailer)
 
