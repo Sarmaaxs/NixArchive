@@ -140,3 +140,51 @@ def test_extract_detects_tampered_payload(tmp_path):
     out = tmp_path / "out"
     with pytest.raises(Exception):
         extract(str(bad), str(out), verbose=False)
+
+
+def test_read_bundle_rejects_missing_sha256_in_v2(tmp_path):
+    src = tmp_path / "in"; src.mkdir()
+    _write_silent_wav(src / "a.wav")
+    bundle = tmp_path / "p.rpzarc"
+    archive(str(src), str(bundle), verbose=False)
+
+    raw = bytearray(bundle.read_bytes())
+    magic, version, _, count, meta_len, payload_len = HDR.unpack_from(raw, 0)
+    off = HDR.size
+    meta = json.loads(bytes(raw[off:off + meta_len]).decode("utf-8"))
+    meta["entries"][0]["original_sha256"] = ""
+    new_meta = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+    new_raw = bytearray()
+    new_raw += HDR.pack(magic, version, 0, count, len(new_meta), payload_len)
+    new_raw += new_meta
+    new_raw += bytes(raw[off + meta_len:off + meta_len + payload_len])
+    bad = tmp_path / "bad.rpzarc"
+    bad.write_bytes(bytes(new_raw))
+
+    with pytest.raises(RepeatzipError, match="sha256"):
+        _read_bundle(str(bad))
+
+
+def test_extract_refuses_entry_without_hash(tmp_path):
+    src = tmp_path / "in"; src.mkdir()
+    _write_silent_wav(src / "a.wav")
+    bundle = tmp_path / "p.rpzarc"
+    archive(str(src), str(bundle), verbose=False)
+
+    raw = bytearray(bundle.read_bytes())
+    magic, version, _, count, meta_len, payload_len = HDR.unpack_from(raw, 0)
+    off = HDR.size
+    meta = json.loads(bytes(raw[off:off + meta_len]).decode("utf-8"))
+    # Rewrite as v1 so the parser accepts empty sha256.
+    meta["entries"][0]["original_sha256"] = ""
+    new_meta = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+    new_raw = bytearray()
+    new_raw += HDR.pack(magic, 1, 0, count, len(new_meta), payload_len)
+    new_raw += new_meta
+    new_raw += bytes(raw[off + meta_len:off + meta_len + payload_len])
+    bad = tmp_path / "bad_v1.rpzarc"
+    bad.write_bytes(bytes(new_raw))
+
+    out = tmp_path / "out"
+    with pytest.raises(Exception):
+        extract(str(bad), str(out), verbose=False)

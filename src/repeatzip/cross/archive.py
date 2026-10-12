@@ -219,9 +219,10 @@ def archive(input_dir: str, output_path: str, *, ref_ncc=0.5,
         print(f"[archive] ratio          : {total_orig/total_out:.3f}x")
 
 
-MAX_META_LEN = 1 << 30        # 1 GiB
-MAX_PAYLOAD_LEN = 1 << 40     # 1 TiB
-MAX_FILE_BYTES = 1 << 41      # 2 TiB hard ceiling
+MAX_META_LEN = 256 << 20        # 256 MiB
+MAX_PAYLOAD_LEN = 64 << 30       # 64 GiB
+MAX_FILE_BYTES = 128 << 30       # 128 GiB hard ceiling
+MAX_ENTRIES = 65535
 
 
 def _read_bundle(path):
@@ -292,7 +293,15 @@ def _read_bundle(path):
         e.setdefault("gain", 1.0)
         e.setdefault("leading_frames", 0)
         e.setdefault("wav_trailer_b64", "")
-        e.setdefault("original_sha256", "")
+        if version >= 2:
+            sha = e.get("original_sha256", "")
+            if (not isinstance(sha, str) or len(sha) != 64
+                    or any(c not in "0123456789abcdef" for c in sha)):
+                raise RepeatzipError(
+                    f"entry {e.get('name', '?')!r} missing or invalid "
+                    f"sha256 (required for archive v2)")
+        else:
+            e.setdefault("original_sha256", "")
     return meta, pay
 
 
@@ -365,13 +374,16 @@ def extract(bundle_path: str, output_dir: str, *, verbose=False) -> None:
             pcm = samples_to_pcm_bytes(decoded[e["name"]], e["sampwidth"])
 
             stored = e.get("original_sha256", "")
-            if stored:
-                full_bytes = prefix + pcm + trailer
-                got = hashlib.sha256(full_bytes).hexdigest()
-                if got != stored:
-                    raise RepeatzipError(
-                        f"integrity check failed for {e['name']!r}: "
-                        f"expected {stored[:12]}, got {got[:12]}")
+            if not stored:
+                raise RepeatzipError(
+                    f"entry {e['name']!r} has no stored sha256; "
+                    f"refusing to write unverified output")
+            full_bytes = prefix + pcm + trailer
+            got = hashlib.sha256(full_bytes).hexdigest()
+            if got != stored:
+                raise RepeatzipError(
+                    f"integrity check failed for {e['name']!r}: "
+                    f"expected {stored[:12]}, got {got[:12]}")
 
             out_path = _safe_output_path(output_dir, e["name"])
             write_wav_parts(out_path, pcm, prefix, trailer)
