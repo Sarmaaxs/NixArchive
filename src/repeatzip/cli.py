@@ -177,6 +177,23 @@ def _cmd_benchmark(args):
         print(f"csv written: {args.csv}")
     return 0 if result.all_roundtrip_ok else 2
 
+
+
+def _cmd_scan(args):
+    from repeatzip.scan import scan_folder, print_report, write_csv
+    result = scan_folder(
+        args.input,
+        sim_threshold=args.sim_threshold,
+        ncc_threshold=args.ncc_threshold,
+        max_files=args.max_files,
+        verbose=args.verbose,
+    )
+    print_report(result)
+    if args.csv:
+        write_csv(result, args.csv)
+        print(f"CSV written: {args.csv}")
+    return 0
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="repeatzip",
@@ -287,6 +304,20 @@ def build_parser():
                     help="Write per-file results to a CSV file")
     bm.add_argument("-v", "--verbose", action="store_true")
     bm.set_defaults(func=_cmd_benchmark)
+
+    sc = sub.add_parser("scan",
+                        help="Find near-duplicate WAVs in a folder tree.")
+    sc.add_argument("input", help="Folder to scan")
+    sc.add_argument("--sim-threshold", type=float, default=0.85,
+                    help="Spectral signature threshold (default 0.85)")
+    sc.add_argument("--ncc-threshold", type=float, default=0.70,
+                    help="Waveform NCC threshold (default 0.70)")
+    sc.add_argument("--max-files", type=int, default=5000,
+                    help="Refuse to scan more than N files (default 5000)")
+    sc.add_argument("--csv", default=None,
+                    help="Write per-cluster CSV to this path")
+    sc.add_argument("-v", "--verbose", action="store_true")
+    sc.set_defaults(func=_cmd_scan)
 
     return p
 
