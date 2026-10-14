@@ -64,3 +64,19 @@ def test_scan_empty_folder_raises(tmp_path):
     from repeatzip.errors import RepeatzipError
     with pytest.raises(RepeatzipError):
         scan_folder(str(tmp_path))
+
+
+def test_scan_skips_truncated_wav(tmp_path):
+    import os
+    # Valid WAV
+    base = _make_base(44100, 6.0)
+    _write(tmp_path / "good.wav", base)
+    # Truncated WAV that will make wave.open raise EOFError
+    bad = tmp_path / "bad.wav"
+    with open(bad, "wb") as f:
+        f.write(b"RIFF\x00\x00\x00\x00WAVE")  # header only, no chunks
+
+    result = scan_folder(str(tmp_path), verbose=False)
+    # Should not raise; should have scanned exactly one file.
+    assert len(result.files) == 1
+    assert result.files[0].path.endswith("good.wav")

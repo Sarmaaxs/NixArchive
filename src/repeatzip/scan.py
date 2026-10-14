@@ -83,15 +83,18 @@ class ScanResult:
 # ---------------------------------------------------------------------------
 
 def _read_meta(path: str):
-    with wave.open(path, "rb") as wf:
-        if wf.getcomptype() != "NONE":
-            return None
-        return {
-            "sr": wf.getframerate(),
-            "ch": wf.getnchannels(),
-            "sw": wf.getsampwidth(),
-            "n": wf.getnframes(),
-        }
+    try:
+        with wave.open(path, "rb") as wf:
+            if wf.getcomptype() != "NONE":
+                return None
+            return {
+                "sr": wf.getframerate(),
+                "ch": wf.getnchannels(),
+                "sw": wf.getsampwidth(),
+                "n": wf.getnframes(),
+            }
+    except Exception:
+        return None
 
 
 def _read_probe(path: str, duration_s: float = PROBE_DURATION_S):
